@@ -3,80 +3,241 @@ import os
 import lightbulb
 import hikari
 import keystone as k
+import capstone as c
 from enum import IntEnum
+import sys
+import math
 
-class Targets(IntEnum):
-    ARM    = k.KS_ARCH_ARM   << 8 | k.KS_MODE_ARM
-    THUMB  = k.KS_ARCH_ARM   << 8 | k.KS_MODE_THUMB
-    X86_16 = k.KS_ARCH_X86   << 8 | k.KS_MODE_16
-    X86_32 = k.KS_ARCH_X86   << 8 | k.KS_MODE_32
-    X86_64 = k.KS_ARCH_X86   << 8 | k.KS_MODE_64
-    MIPS32 = k.KS_ARCH_MIPS  << 8 | k.KS_MODE_MIPS32
-    MIPS64 = k.KS_ARCH_MIPS  << 8 | k.KS_MODE_MIPS64
-    PPC64  = k.KS_ARCH_PPC   << 8 | k.KS_MODE_PPC64
-    SPARC  = k.KS_ARCH_SPARC << 8 | k.KS_MODE_SPARC32
 
-    #Exceptions
-    PPC32_BIG_ENDIAN    = k.KS_ARCH_PPC     << 8 | k.KS_MODE_PPC32
-    ARM64_LITTLE_ENDIAN = k.KS_ARCH_ARM64   << 8
-    HEXAGON_BIG_ENDIAN  = k.KS_ARCH_HEXAGON << 8
-    SYSTEMZ_BIG_ENDIAN  = k.KS_ARCH_SYSTEMZ << 8
+class ENDIAN(IntEnum):
+    """
+    An IntEnum for representing byte order.
+    """
 
-class Endian(IntEnum):
-    BIG_ENDIAN    = k.KS_MODE_BIG_ENDIAN
-    LITTLE_ENDIAN = k.KS_MODE_LITTLE_ENDIAN
+    LITTLE = 0
+    BIG = 1
 
-KS_ARCH_MODE = {
-    target: (((target.value & 0xFF00) >> 8), target.value & 0x00FF)
-    for target in Targets
+
+class Triplet:
+    """
+    Generic Storage class for representing the triplet (arch, mode, endian).
+    """
+
+    def __init__(self, is_ks, arch, mode, endian):
+        """
+        is_ks: A flag to check if the triplet belongs to keystone or capstone.
+        arch: Hardware Constant.
+        mode: Mode Constant.
+        _endian: Custom Endian Constant.
+        """
+        self.is_ks = is_ks
+        self.arch = arch
+        self.mode = mode
+        self._endian = endian
+
+    @property
+    def endian(self):
+        """
+        A property to translate custom Endian to keystone/capstone endian constants.
+        """
+        if not self.is_ks:
+            return (
+                c.CS_MODE_LITTLE_ENDIAN
+                if self._endian == ENDIAN.LITTLE
+                else c.CS_MODE_BIG_ENDIAN
+            )
+        return (
+            k.KS_MODE_LITTLE_ENDIAN
+            if self._endian == ENDIAN.LITTLE
+            else k.KS_MODE_BIG_ENDIAN
+        )
+
+
+class KS_Targets(IntEnum):
+    """
+    An IntEnum containing identifiers for various targets.
+    .name is name of the architecture + supported mode (Eg: X86_32 where X86=arch and 32=mode).
+    .value is a packed integer of the triplet (arch, mode, endian).
+
+    Encoding for .value is as follows:
+        $AAMMEE
+    where,
+        AA: Keystone Hardware Architecture Constant.
+        MM: Keystone Mode Constant.
+        EE: Flag to identify the byte order.
+
+    * ARM64, HEXAGON and SYSTEMZ do not have a mode so, MM=$00 and shall be ignored.
+    """
+
+    ARM = k.KS_ARCH_ARM << 16 | k.KS_MODE_ARM << 8 | ENDIAN.LITTLE
+    THUMB = k.KS_ARCH_ARM << 16 | k.KS_MODE_THUMB << 8 | ENDIAN.LITTLE
+    X86_16 = k.KS_ARCH_X86 << 16 | k.KS_MODE_16 << 8 | ENDIAN.LITTLE
+    X86_32 = k.KS_ARCH_X86 << 16 | k.KS_MODE_32 << 8 | ENDIAN.LITTLE
+    X86_64 = k.KS_ARCH_X86 << 16 | k.KS_MODE_64 << 8 | ENDIAN.LITTLE
+    MIPS32 = k.KS_ARCH_MIPS << 16 | k.KS_MODE_MIPS32 << 8 | ENDIAN.BIG
+    MIPS64 = k.KS_ARCH_MIPS << 16 | k.KS_MODE_MIPS64 << 8 | ENDIAN.LITTLE
+    PPC32 = k.KS_ARCH_PPC << 16 | k.KS_MODE_PPC32 << 8 | ENDIAN.BIG
+    PPC64 = k.KS_ARCH_PPC << 16 | k.KS_MODE_PPC64 << 8 | ENDIAN.LITTLE
+    SPARC = k.KS_ARCH_SPARC << 16 | k.KS_MODE_SPARC32 << 8 | ENDIAN.BIG
+    ARM64 = k.KS_ARCH_ARM64 << 16 | ENDIAN.LITTLE
+    HEXAGON = k.KS_ARCH_HEXAGON << 16 | ENDIAN.BIG
+    SYSTEMZ = k.KS_ARCH_SYSTEMZ << 16 | ENDIAN.BIG
+
+
+KS_TRIPLETS = {
+    t: Triplet(
+        is_ks=True,
+        arch=(t.value & 0xFF0000) >> 16,
+        mode=(t.value & 0x00FF00) >> 8,
+        endian=ENDIAN(t.value & 0x0000FF),
+    )
+    for t in KS_Targets
 }
 
 bot = hikari.GatewayBot(token=os.environ["BOT_TOKEN"])
 client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 
-@client.register(guilds=[1241346581824016415])
+
+@client.register(guilds=[1380886371287306371])
 class Asm(
     lightbulb.SlashCommand,
     name="asm",
     description="Assembles the given Instructions into Machine Code.",
 ):
-    target = lightbulb.integer("target", "Pass the hardware target.", choices=[lightbulb.Choice(t.name, t.value) for t in Targets])
+    target = lightbulb.integer(
+        "target",
+        "Pass the hardware Target.",
+        choices=[lightbulb.Choice(t.name, t.value) for t in KS_Targets],
+    )
     code = lightbulb.string("code", "Pass the assembly instructions.")
-    endian = lightbulb.integer("endian", "Endian-ness of the architecture. Ignored in case of Hexagon, PPC32, ARM64, SYSTEMZ.", default=Endian.LITTLE_ENDIAN, choices=[lightbulb.Choice(t.name, t.value) for t in Endian])
 
-    def _get_assembled_bytes(self, arch, mode):
+    def _get_assembled_bytes(self, triplet):
         try:
-            ks = k.Ks(arch, mode)
+            ks = k.Ks(triplet.arch, triplet.mode | triplet.endian)
             data, count = ks.asm(bytes(self.code, "utf-8"))
             return (data, count)
         except k.KsError as e:
             return e
-    
+
     @lightbulb.invoke
     async def invoke(self, ctx: lightbulb.Context) -> None:
-        target = Targets(self.target)
-        arch, mode = KS_ARCH_MODE[target]
-        endian = Endian(self.endian)
+        target = KS_Targets(self.target)
+        triplet = KS_TRIPLETS[target]
 
-        if target in (Targets.HEXAGON_BIG_ENDIAN, Targets.SYSTEMZ_BIG_ENDIAN, Targets.PPC32_BIG_ENDIAN):
-            endian = Endian.BIG_ENDIAN
-        elif target == Targets.ARM64_LITTLE_ENDIAN:
-            endian = Endian.LITTLE_ENDIAN
-
-        mode |= endian
-
-        result = self._get_assembled_bytes(arch, mode)
-        content = None
+        result = self._get_assembled_bytes(triplet)
+        body = None
 
         if isinstance(result, k.KsError):
-            content = result
+            body = result
         elif result[0] == None:
-            content = "Error while parsing the assembly. Are you sure the format is correct?"
+            body = (
+                "Error while parsing the assembly. Are you sure the format is correct?"
+            )
         else:
-            content =  f"Number of Statements: {result[1]}\n```\n{', '.join(map(str, result[0]))}\n```"
+            statements = result[1]
+            byte_content = ", ".join(map(str, result[0]))
+            hex_content = " ".join([f"{b:02X}" for b in result[0]])
+            body = (
+                f"; Number of Statements: {statements}\n\n{hex_content} ; {self.code}"
+            )
 
-        await ctx.respond(content)
+        response = f"""```x86asm\n; Target: {target.name} (Endian: {triplet._endian.name.lower()})\n{body}\n```"""
+        await ctx.respond(response)
+
+
+class CS_Targets(IntEnum):
+    """
+    Capstone counterpart to KS_Targets.
+    """
+
+    ARM = c.CS_ARCH_ARM << 16 | c.CS_MODE_ARM << 8 | ENDIAN.LITTLE
+    THUMB = c.CS_ARCH_ARM << 16 | c.CS_MODE_THUMB << 8 | ENDIAN.LITTLE
+    ARM64 = c.CS_ARCH_ARM64 << 16 | c.CS_MODE_ARM << 8 | ENDIAN.LITTLE
+    X86_32 = c.CS_ARCH_X86 << 16 | c.CS_MODE_32 << 8 | ENDIAN.LITTLE
+    X86_64 = c.CS_ARCH_X86 << 16 | c.CS_MODE_64 << 8 | ENDIAN.LITTLE
+    MIPS32 = c.CS_ARCH_MIPS << 16 | c.CS_MODE_MIPS32 << 8 | ENDIAN.BIG
+    MIPS64 = c.CS_ARCH_MIPS << 16 | c.CS_MODE_MIPS64 << 8 | ENDIAN.LITTLE
+    PPC32 = c.CS_ARCH_PPC << 16 | c.CS_MODE_32 << 8 | ENDIAN.BIG
+    PPC64 = c.CS_ARCH_PPC << 16 | c.CS_MODE_64 << 8 | ENDIAN.LITTLE
+
+
+CS_TRIPLETS = {
+    t: Triplet(
+        is_ks=False,
+        arch=(t.value & 0xFF0000) >> 16,
+        mode=(t.value & 0x00FF00) >> 8,
+        endian=ENDIAN(t.value & 0x0000FF),
+    )
+    for t in CS_Targets
+}
+
+
+@client.register(guilds=[1380886371287306371])
+class Disasm(
+    lightbulb.SlashCommand,
+    name="disasm",
+    description="Disassembles the given Machine Code into relevant Assembly Instructions.",
+):
+    target = lightbulb.integer(
+        "target",
+        "Pass the target Assembly Target.",
+        choices=[lightbulb.Choice(t.name, t.value) for t in CS_Targets],
+    )
+    code = lightbulb.string("code", "Pass the Binary in Hexadecimal Notation.")
+
+    def _clean_code(self):
+        code_string = self.code
+        escape_count = 0
+        if self.code.startswith("0x"):
+            escape_count = 2
+        elif self.code.startswith("$") or self.code.startswith("#"):
+            escape_count = 1
+
+        code_string = self.code[escape_count:]
+        return code_string.replace(" ", "")
+
+    def _get_disassembled_content(self, triplet):
+        code_string = self._clean_code()
+        length = math.ceil(len(code_string) / 2)
+        content = int(code_string, 16).to_bytes(length, byteorder="big", signed=False)
+
+        try:
+            md = c.Cs(triplet.arch, triplet.mode | triplet.endian)
+            return md.disasm(content, 0x1000)
+        except c.CsError as e:
+            return e
+
+    @lightbulb.invoke
+    async def invoke(self, ctx: lightbulb.Context) -> None:
+        target = CS_Targets(self.target)
+        triplet = CS_TRIPLETS[target]
+
+        result = self._get_disassembled_content(triplet)
+        body = None
+
+        if isinstance(result, c.CsError):
+            body = result
+        else:
+            lines = []
+            for i in result:
+                lines.append(
+                    "0x%X:\t%s\t%s %s"
+                    % (
+                        i.address,
+                        " ".join([f"{int(b):02X}" for b in i.bytes]),
+                        i.mnemonic,
+                        i.op_str,
+                    )
+                )
+            if len(lines) == 0:
+                body = "Idk man, capstone (the disassembler engine this bot uses) didnt return any disassembly nor any errors. Are you sure the opcodes are correct?"
+            else:
+                body = "\n".join(lines)
+
+        response = f"```x86asm\n; Target: {target.name} (Endian: {triplet._endian.name.lower()})\n\n{body}\n```"
+        await ctx.respond(response)
+
 
 if __name__ == "__main__":
     bot.run()
