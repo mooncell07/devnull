@@ -8,6 +8,7 @@ from enum import IntEnum
 import sys
 import math
 
+GUILDS = [1380886371287306371]
 
 class ENDIAN(IntEnum):
     """
@@ -99,7 +100,7 @@ client = lightbulb.client_from_app(bot)
 bot.subscribe(hikari.StartingEvent, client.start)
 
 
-@client.register(guilds=[1380886371287306371])
+@client.register(guilds=GUILDS)
 class Asm(
     lightbulb.SlashCommand,
     name="asm",
@@ -173,7 +174,7 @@ CS_TRIPLETS = {
 }
 
 
-@client.register(guilds=[1380886371287306371])
+@client.register(guilds=GUILDS)
 class Disasm(
     lightbulb.SlashCommand,
     name="disasm",
@@ -181,7 +182,7 @@ class Disasm(
 ):
     target = lightbulb.integer(
         "target",
-        "Pass the target Assembly Target.",
+        "Pass the Assembly Target.",
         choices=[lightbulb.Choice(t.name, t.value) for t in CS_Targets],
     )
     code = lightbulb.string("code", "Pass the Binary in Hexadecimal Notation.")
