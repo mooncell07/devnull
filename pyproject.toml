@@ -3,7 +3,7 @@ name = "devnull"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "mooncell07",email = "<80042274+mooncell07@users.noreply.github.com>"}
+    {name = "Nova",email = "mooncell07@proton.me"}
 ]
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
